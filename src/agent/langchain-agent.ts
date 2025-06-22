@@ -61,18 +61,22 @@ export class LangChainMCPAgent {
       logger.error('Failed to initialize LangChain MCP Agent:', error);
       throw error;
     }
-  }  private async createAgent(): Promise<void> {
+  }
+
+  private async createAgent(): Promise<void> {
     const prompt = ChatPromptTemplate.fromMessages([
-      ["system", `You are a helpful AI assistant with access to various tools through an MCP (Model Context Protocol) server.
+      [
+        "system", `You are a helpful AI assistant with access to various tools through an MCP (Model Context Protocol) server.
 
-Available tools: ${this.tools.map(tool => `${tool.name}: ${tool.description}`).join(', ')}
+        Available tools: ${this.tools.map(tool => `${tool.name}: ${tool.description}`).join(', ')}
 
-You have access to the following tools. Use them when they can help answer the user's question:
-${this.tools.map(tool => `- ${tool.name}: ${tool.description}`).join('\n')}
+        You have access to the following tools. Use them when they can help answer the user's question:
+        ${this.tools.map(tool => `- ${tool.name}: ${tool.description}`).join('\n')}
 
-IMPORTANT: You MUST use tools when they can help answer the question. When you see a tool call is needed, you should use the tool and wait for the result before providing your final answer.
+        IMPORTANT: You MUST use tools when they can help answer the question. When you see a tool call is needed, you should use the tool and wait for the result before providing your final answer.
 
-Be helpful and accurate in your responses.`],
+        Be helpful and accurate in your responses.`
+      ],
       new MessagesPlaceholder("chat_history"),
       ["human", "{input}"],
       new MessagesPlaceholder("agent_scratchpad"),
@@ -166,17 +170,19 @@ Be helpful and accurate in your responses.`],
     input: any, 
     sessionId: string, 
     stream?: SSEStream
-  ): Promise<string> {    const promptTemplate = ChatPromptTemplate.fromMessages([
-      ["system", `You are a helpful AI assistant with access to various tools through an MCP (Model Context Protocol) server.
+  ): Promise<string> {    
+    const promptTemplate = ChatPromptTemplate.fromMessages([
+      [
+        "system", `You are a helpful AI assistant with access to various tools through an MCP (Model Context Protocol) server.
 
-Available tools: ${this.tools.map(tool => `${tool.name}: ${tool.description}`).join(', ')}
+        Available tools: ${this.tools.map(tool => `${tool.name}: ${tool.description}`).join(', ')}
 
-You have access to the following tools. Use them when they can help answer the user's question:
-${this.tools.map(tool => `- ${tool.name}: ${tool.description}`).join('\n')}
+        You have access to the following tools. Use them when they can help answer the user's question: ${this.tools.map(tool => `- ${tool.name}: ${tool.description}`).join('\n')}
 
-IMPORTANT: You MUST use tools when they can help answer the question. When you see a tool call is needed, you should use the tool and wait for the result before providing your final answer.
+        IMPORTANT: You MUST use tools when they can help answer the question. When you see a tool call is needed, you should use the tool and wait for the result before providing your final answer.
 
-Be helpful and accurate in your responses.`],
+        Be helpful and accurate in your responses.`
+      ],
       ["human", "{input}"],
     ]);
 
@@ -245,7 +251,9 @@ Be helpful and accurate in your responses.`],
         }
       }        // Call LLM again with tool results to get final answer
       const followUpTemplate = ChatPromptTemplate.fromMessages([
-        ["system", `You are a helpful AI assistant. You have just executed some tools and received results. Provide a helpful response to the user based on the tool results.`],
+        [
+          "system", `You are a helpful AI assistant. You have just executed some tools and received results. Provide a helpful response to the user based on the tool results.`
+        ],
         ["human", "{user_input}"],
         ["assistant", "I executed the following tools and got these results: {tool_results}"],
         ["human", "Based on the tool results above, please provide a clear and helpful answer to my original question."]
