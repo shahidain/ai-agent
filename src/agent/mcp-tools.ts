@@ -154,77 +154,181 @@ export class MCPToolWrapper extends DynamicStructuredTool {
       .join('\n');
 
     return otherContent || JSON.stringify(result.content);
-  }
-
-  private mapInputToSchema(input: any): Record<string, any> {
+  }  private mapInputToSchema(input: any): Record<string, any> {
     const properties = this.mcpTool.inputSchema?.properties || {};
+    const required = this.mcpTool.inputSchema?.required || [];
     const propertyNames = Object.keys(properties);
     
     if (propertyNames.length === 0) {
       return typeof input === 'object' ? input : { input };
     }
     
-    // Special handling for specific tools
-    if (this.name === 'add_two_numbers') {
-      if (typeof input === 'string' && input.includes(',')) {
-        const numbers = input.split(',').map(s => s.trim());
-        if (numbers.length >= 2) {
-          return {
-            firstNumber: parseFloat(numbers[0]) || 0,
-            secondNumber: parseFloat(numbers[1]) || 0
-          };
-        }
-      } else if (typeof input === 'string') {
-        const numberMatches = input.match(/(\d+(?:\.\d+)?)/g);
-        if (numberMatches && numberMatches.length >= 2) {
-          return {
-            firstNumber: parseFloat(numberMatches[0]),
-            secondNumber: parseFloat(numberMatches[1])
-          };
-        }
-      }
+    // If input is already an object, validate it against schema
+    if (typeof input === 'object' && input !== null) {
+      return input;
     }
     
-    if (this.name === 'fetch_product') {
-      if (typeof input === 'string' || typeof input === 'number') {
-        return { productId: input.toString() };
-      }
-    }
-    
-    if (this.name === 'fetch_products_by_category') {
-      if (typeof input === 'string') {
-        return { category: input };
-      }
-    }
-    
+    // For single property schemas, map directly
     if (propertyNames.length === 1) {
-      return { [propertyNames[0]]: input };
-    }
-    
-    if (typeof input !== 'object') {
-      const commonMappings: Record<string, string[]> = {
-        id: ['id', 'productId', 'userId', 'itemId'],
-        query: ['query', 'search', 'term'],
-        text: ['text', 'content', 'message'],
-        url: ['url', 'link', 'endpoint'],
-        name: ['name', 'title', 'label']
-      };
+      const propName = propertyNames[0];
+      const propSchema = properties[propName] as any;
       
-      for (const [inputType, possibleProps] of Object.entries(commonMappings)) {
-        const matchingProp = propertyNames.find(prop => 
-          possibleProps.some(possible => 
-            prop.toLowerCase().includes(possible.toLowerCase())
-          )
-        );
-        if (matchingProp) {
-          return { [matchingProp]: input };
-        }
+      // Type conversion based on schema
+      let convertedValue = this.convertValueToSchemaType(input, propSchema);
+      return { [propName]: convertedValue };
+    }      // For multiple properties, try to intelligently map based on property names and types
+    if (typeof input === 'string') {
+      // Try to parse a mixed string input (e.g., "5 3 add", "laptops electronics", etc.)
+      const words = input.trim().split(/\s+/);
+      const numberMatches = input.match(/(\d+(?:\.\d+)?)/g);
+      
+      const numericProps = propertyNames.filter(prop => {
+        const propSchema = properties[prop] as any;
+        return propSchema.type === 'number' || propSchema.type === 'integer';
+      });
+      
+      const stringProps = propertyNames.filter(prop => {
+        const propSchema = properties[prop] as any;
+        return propSchema.type === 'string';
+      });
+      
+      const result: Record<string, any> = {};
+      
+      // First, try to map numbers to numeric properties
+      if (numberMatches && numericProps.length > 0) {
+        numericProps.forEach((prop, index) => {
+          if (index < numberMatches.length) {
+            const propSchema = properties[prop] as any;
+            result[prop] = this.convertValueToSchemaType(numberMatches[index], propSchema);
+          }
+        });
       }
       
-      return { [propertyNames[0]]: input };
+      // Then, try to map remaining words to string properties
+      if (stringProps.length > 0) {
+        const nonNumericWords = words.filter(word => !/^\d+(\.\d+)?$/.test(word));
+        
+        if (nonNumericWords.length > 0) {
+          // For enum properties, try to find matching values
+          for (const prop of stringProps) {
+            const propSchema = properties[prop] as any;
+            if (propSchema.enum && Array.isArray(propSchema.enum)) {
+              const matchingEnum = nonNumericWords.find(word => 
+                propSchema.enum.includes(word.toLowerCase()) || 
+                propSchema.enum.includes(word)
+              );
+              if (matchingEnum && !(prop in result)) {
+                result[prop] = matchingEnum;
+                nonNumericWords.splice(nonNumericWords.indexOf(matchingEnum), 1);
+                break;
+              }
+            }
+          }
+          
+          // Map remaining words to string properties by priority
+          for (const prop of stringProps) {
+            if (nonNumericWords.length === 0) break;
+            if (prop in result) continue;
+            
+            const propSchema = properties[prop] as any;
+            
+            // Prioritize properties based on common naming patterns
+            const priority = this.getPropertyPriority(prop, propSchema);
+            
+            if (nonNumericWords.length === 1 || priority > 0) {
+              result[prop] = nonNumericWords.shift() || '';
+            }
+          }
+          
+          // If we still have unmapped words and properties, join remaining words
+          if (nonNumericWords.length > 0) {
+            const remainingStringProps = stringProps.filter(prop => !(prop in result));
+            if (remainingStringProps.length > 0) {
+              const bestProp = remainingStringProps[0];
+              result[bestProp] = nonNumericWords.join(' ');
+            }
+          }
+        }
+      }      // If we successfully mapped some properties, return the result
+      if (Object.keys(result).length > 0) {
+        // Fill in any required properties that are still missing
+        for (const reqProp of required) {
+          if (!(reqProp in result)) {
+            const propSchema = properties[reqProp] as any;
+            result[reqProp] = this.getDefaultValueForSchema(propSchema);
+          }
+        }
+        return result;
+      }
+      
+      // Fallback for simple string inputs - map to the most relevant string property
+      if (stringProps.length > 0) {
+        const bestMatch = stringProps.find(prop => 
+          prop.toLowerCase().includes('query') ||
+          prop.toLowerCase().includes('name') || 
+          prop.toLowerCase().includes('id') ||
+          prop.toLowerCase().includes('search') ||
+          prop.toLowerCase().includes('text')
+        ) || stringProps[0];
+        
+        return { [bestMatch]: input };
+      }
+    }    
+    // Fallback: try to match input type to schema types
+    const result: Record<string, any> = {};
+    
+    // Handle required properties first
+    for (const propName of required) {
+      if (!(propName in result)) {
+        const propSchema = properties[propName] as any;
+        result[propName] = this.convertValueToSchemaType(input, propSchema);
+        break; // Only map to first required property to avoid duplicates
+      }
     }
     
-    return input;
+    // If no required properties were mapped, use first property
+    if (Object.keys(result).length === 0 && propertyNames.length > 0) {
+      const propName = propertyNames[0];
+      const propSchema = properties[propName] as any;
+      result[propName] = this.convertValueToSchemaType(input, propSchema);
+    }
+    
+    return result;
+  }
+  
+  private convertValueToSchemaType(value: any, propSchema: any): any {
+    if (value === null || value === undefined) {
+      return value;
+    }
+    
+    switch (propSchema.type) {
+      case 'number':
+        const numValue = parseFloat(value.toString());
+        return isNaN(numValue) ? 0 : numValue;
+      
+      case 'integer':
+        const intValue = parseInt(value.toString());
+        return isNaN(intValue) ? 0 : intValue;
+      
+      case 'boolean':
+        if (typeof value === 'boolean') return value;
+        if (typeof value === 'string') {
+          return value.toLowerCase() === 'true' || value === '1';
+        }
+        return Boolean(value);
+      
+      case 'string':
+        return value.toString();
+      
+      case 'array':
+        return Array.isArray(value) ? value : [value];
+      
+      case 'object':
+        return typeof value === 'object' ? value : { value };
+      
+      default:
+        return value;
+    }
   }
 
   private validateAndCleanArgs(args: Record<string, any>): Record<string, any> {
@@ -278,6 +382,45 @@ export class MCPToolWrapper extends DynamicStructuredTool {
     }
     
     return cleanedArgs;
+  }
+
+  private getPropertyPriority(propName: string, propSchema: any): number {
+    const name = propName.toLowerCase();
+    
+    // Higher priority for common important properties
+    if (name.includes('query') || name.includes('search')) return 10;
+    if (name.includes('name') || name.includes('title')) return 9;
+    if (name.includes('id')) return 8;
+    if (name.includes('category') || name.includes('type')) return 7;
+    if (name.includes('text') || name.includes('content')) return 6;
+    if (name.includes('description') || name.includes('summary')) return 5;
+    
+    // Medium priority for enum properties
+    if (propSchema.enum && Array.isArray(propSchema.enum)) return 4;
+    
+    // Lower priority for optional properties
+    return 1;
+  }
+
+  private getDefaultValueForSchema(propSchema: any): any {
+    switch (propSchema.type) {
+      case 'number':
+      case 'integer':
+        return 0;
+      case 'boolean':
+        return false;
+      case 'string':
+        if (propSchema.enum && Array.isArray(propSchema.enum)) {
+          return propSchema.enum[0];
+        }
+        return '';
+      case 'array':
+        return [];
+      case 'object':
+        return {};
+      default:
+        return null;
+    }
   }
 }
 
