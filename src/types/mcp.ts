@@ -44,7 +44,9 @@ export interface MCPListToolsRequest {
   jsonrpc: '2.0';
   id: string | number;
   method: 'tools/list';
-  params?: {};
+  params?: {
+    sessionId?: string;
+  };
 }
 
 export interface MCPListToolsResponse {
@@ -85,6 +87,7 @@ export interface MCPInitializeRequest {
       name: string;
       version: string;
     };
+    sessionId?: string;
   };
 }
 

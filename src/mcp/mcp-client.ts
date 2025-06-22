@@ -17,7 +17,9 @@ import { logger } from '../utils/logger';
 export class MCPClient {
   private baseURL: string;
   private httpClient: AxiosInstance;
-  private eventSource?: EventSource;  private tools: MCPTool[] = [];
+  private eventSource?: EventSource;
+  private sessionId?: string;
+  private tools: MCPTool[] = [];
   private isConnected: boolean = false;
   private initialized: boolean = false;
   private pendingRequests: Map<string | number, (response: MCPMessage) => void> = new Map();
@@ -57,19 +59,24 @@ export class MCPClient {
         return Promise.reject(error);
       }
     );
-  }  public async connect(): Promise<void> {
+  }    public async connect(): Promise<void> {
     try {
-      // First setup SSE connection for real-time communication
+      // Setup SSE connection and wait for sessionId
       await this.setupSSEConnection();
       
-      // Then initialize the MCP connection
+      // Ensure we have a sessionId before proceeding
+      if (!this.sessionId) {
+        throw new Error('Failed to receive sessionId from MCP server');
+      }
+      
+      // Now initialize the MCP connection using the sessionId
       await this.initialize();
       
       // Finally fetch available tools
       await this.fetchTools();
       
       this.isConnected = true;
-      logger.info('MCP client connected successfully');
+      logger.info('MCP client connected successfully with sessionId:', this.sessionId);
     } catch (error) {
       logger.error('Failed to connect to MCP server:', error);
       this.isConnected = false;
@@ -89,8 +96,11 @@ export class MCPClient {
       });
       return false;
     }
-  }
-  private async initialize(): Promise<void> {
+  }  private async initialize(): Promise<void> {
+    if (!this.sessionId) {
+      throw new Error('Cannot initialize without sessionId');
+    }
+
     const request: MCPInitializeRequest = {
       jsonrpc: '2.0',
       id: uuidv4(),
@@ -104,6 +114,7 @@ export class MCPClient {
           name: 'ai-agent',
           version: '1.0.0',
         },
+        sessionId: this.sessionId,
       },
     };
 
@@ -124,8 +135,7 @@ export class MCPClient {
       logger.error('Failed to initialize MCP server:', error);
       throw error;
     }
-  }
-  private async setupSSEConnection(): Promise<void> {
+  }private async setupSSEConnection(): Promise<void> {
     return new Promise((resolve, reject) => {
       try {
         const sseURL = `${this.baseURL}/sse`;
@@ -133,14 +143,27 @@ export class MCPClient {
         
         this.eventSource = new EventSource(sseURL);
 
+        // Track if we've received the initial sessionId
+        let sessionIdReceived = false;
+
         this.eventSource.onopen = () => {
-          logger.info('SSE connection established successfully');
-          resolve();
+          logger.info('SSE connection established, waiting for sessionId...');
         };        
+
         this.eventSource.onmessage = (event) => {
           try {
             logger.debug('Raw SSE data received:', event.data);
             const message: MCPMessage = JSON.parse(event.data);
+            
+            // Check if this is the initial sessionId message
+            if (!sessionIdReceived && message.params?.sessionId) {
+              this.sessionId = message.params.sessionId;
+              sessionIdReceived = true;
+              logger.info('SessionId received from MCP server:', this.sessionId);
+              resolve();
+              return;
+            }
+            
             this.handleSSEMessage(message);
           } catch (error) {
             logger.error('Error parsing SSE message:', { data: event.data, error: error instanceof Error ? error.message : error });
@@ -148,15 +171,19 @@ export class MCPClient {
         };
 
         this.eventSource.onerror = (error) => {
-          logger.error('SSE connection error:', error);
-          reject(new Error(`Failed to establish SSE connection to ${sseURL}`));
+          if (!sessionIdReceived) {
+            logger.error('SSE connection error before sessionId received:', error);
+            reject(new Error(`Failed to establish SSE connection to ${sseURL}`));
+          } else {
+            logger.error('SSE connection error:', error);
+          }
         };
 
-        // Add timeout for connection
+        // Add timeout for sessionId reception
         setTimeout(() => {
-          if (this.eventSource?.readyState !== EventSource.OPEN) {
+          if (!sessionIdReceived) {
             this.eventSource?.close();
-            reject(new Error(`SSE connection timeout after 10 seconds`));
+            reject(new Error(`Failed to receive sessionId within 10 seconds`));
           }
         }, 10000);
         
@@ -215,16 +242,20 @@ export class MCPClient {
       }
     });
   }
-
   public async fetchTools(): Promise<MCPTool[]> {
     if (!this.initialized) {
       throw new Error('MCP client not initialized');
+    }
+
+    if (!this.sessionId) {
+      throw new Error('Cannot fetch tools without sessionId');
     }
 
     const request: MCPListToolsRequest = {
       jsonrpc: '2.0',
       id: uuidv4(),
       method: 'tools/list',
+      params: { sessionId: this.sessionId },
     };
 
     try {
@@ -236,10 +267,15 @@ export class MCPClient {
       logger.error('Failed to fetch tools:', error);
       throw error;
     }
-  }
-  public async callTool(name: string, arguments_: Record<string, any>, sessionId: string): Promise<MCPToolResult> {
+  }  public async callTool(name: string, arguments_: Record<string, any>, sessionId?: string): Promise<MCPToolResult> {
     if (!this.initialized) {
       throw new Error('MCP client not initialized');
+    }
+
+    // Use provided sessionId or fall back to client's sessionId
+    const effectiveSessionId = sessionId || this.sessionId;
+    if (!effectiveSessionId) {
+      throw new Error('No sessionId available for tool call');
     }
 
     const request: MCPCallToolRequest = {
@@ -249,12 +285,12 @@ export class MCPClient {
       params: {
         name,
         arguments: arguments_,
-        sessionId,
+        sessionId: effectiveSessionId,
       },
     };
 
     try {
-      logger.info(`Calling tool: ${name} for session: ${sessionId}`, arguments_);
+      logger.info(`Calling tool: ${name} for session: ${effectiveSessionId}`, arguments_);
       const response = await this.sendRequest<MCPCallToolResponse>(request);
       return response.result;
     } catch (error) {
@@ -278,7 +314,6 @@ export class MCPClient {
   public isClientConnected(): boolean {
     return this.isConnected && this.initialized;
   }
-
   public async disconnect(): Promise<void> {
     if (this.eventSource) {
       this.eventSource.close();
@@ -286,10 +321,11 @@ export class MCPClient {
     
     this.isConnected = false;
     this.initialized = false;
+    this.sessionId = undefined;
     this.pendingRequests.clear();
     
     logger.info('MCP client disconnected');
-  }  public async healthCheck(): Promise<{
+  }public async healthCheck(): Promise<{
     status: 'connected' | 'disconnected' | 'partial';
     details: {
       serverReachable: boolean;
@@ -331,18 +367,23 @@ export class MCPClient {
   public getBaseURL(): string {
     return this.baseURL;
   }
-
   public getConnectionStatus(): {
     connected: boolean;
     initialized: boolean;
     toolsAvailable: number;
     hasActiveSSE: boolean;
+    sessionId?: string;
   } {
     return {
       connected: this.isConnected,
       initialized: this.initialized,
       toolsAvailable: this.tools.length,
       hasActiveSSE: this.eventSource?.readyState === EventSource.OPEN,
+      sessionId: this.sessionId,
     };
+  }
+
+  public getSessionId(): string | undefined {
+    return this.sessionId;
   }
 }

@@ -7,9 +7,8 @@ import { logger } from '../utils/logger';
 export class MCPToolWrapper extends DynamicStructuredTool {
   public mcpTool: MCPTool;
   private mcpClient: MCPClient;
-  private currentSessionId: string = 'default';
-  
-  constructor(mcpClient: MCPClient, mcpTool: MCPTool) {
+  private currentSessionId: string;
+    constructor(mcpClient: MCPClient, mcpTool: MCPTool) {
     const schema = MCPToolWrapper.createZodSchemaFromMCP(mcpTool.inputSchema);
     
     super({
@@ -23,6 +22,10 @@ export class MCPToolWrapper extends DynamicStructuredTool {
     
     this.mcpClient = mcpClient;
     this.mcpTool = mcpTool;
+    
+    // Initialize with sessionId from MCP client
+    // Note: This will be properly set during tool initialization in MCPToolsManager
+    this.currentSessionId = mcpClient.getSessionId() || 'pending-session-id';
   }
 
   private static createZodSchemaFromMCP(inputSchema: any): z.ZodObject<any> {
@@ -73,10 +76,12 @@ export class MCPToolWrapper extends DynamicStructuredTool {
     
     return z.object(zodFields);
   }
-
   public async executeInternal(input: any): Promise<string> {
     try {
-      logger.info(`🔧 Executing MCP tool: ${this.name}`, { input, sessionId: this.currentSessionId });
+      // Always use the current sessionId from MCP client to ensure consistency
+      const currentSessionId = this.mcpClient.getSessionId() || this.currentSessionId;
+      
+      logger.info(`🔧 Executing MCP tool: ${this.name}`, { input, sessionId: currentSessionId });
       
       // Transform the input from LangChain format to MCP format
       let mcpArguments: Record<string, any> = {};
@@ -95,16 +100,16 @@ export class MCPToolWrapper extends DynamicStructuredTool {
       const mcpToolCall = {
         name: this.name,
         arguments: mcpArguments, // Use 'arguments' not 'args'
-        sessionId: this.currentSessionId
+        sessionId: currentSessionId
       };
       
       logger.info(`📞 Calling MCP tool with proper format:`, mcpToolCall);
       
-      // Call MCP tool with the correct format
+      // Call MCP tool with the correct format - always use MCP client's sessionId
       const result: MCPToolResult = await this.mcpClient.callTool(
         this.name, 
         mcpArguments, // arguments 
-        this.currentSessionId // sessionId
+        currentSessionId // sessionId - use the current one from MCP client
       );
       
       if (result.isError) {
@@ -119,10 +124,13 @@ export class MCPToolWrapper extends DynamicStructuredTool {
       logger.error(`❌ Error executing tool ${this.name}:`, error);
       throw error;
     }
+  }  public setSessionId(sessionId: string): void {
+    this.currentSessionId = sessionId;
   }
 
-  public setSessionId(sessionId: string): void {
-    this.currentSessionId = sessionId;
+  public getSessionId(): string {
+    // Always return the most current sessionId from MCP client if available
+    return this.mcpClient.getSessionId() || this.currentSessionId;
   }
 
   private formatToolResult(result: MCPToolResult): string {
@@ -431,7 +439,6 @@ export class MCPToolsManager {
   constructor(mcpClient: MCPClient) {
     this.mcpClient = mcpClient;
   }
-
   public async initializeTools(): Promise<MCPToolWrapper[]> {
     try {
       logger.info('Initializing MCP tools...');
@@ -444,6 +451,15 @@ export class MCPToolsManager {
       const mcpTools = await this.mcpClient.fetchTools();
       
       this.tools = mcpTools.map(mcpTool => new MCPToolWrapper(this.mcpClient, mcpTool));
+      
+      // Synchronize sessionId from MCP client to all tools
+      const clientSessionId = this.mcpClient.getSessionId();
+      if (clientSessionId) {
+        this.setSessionIdForAllTools(clientSessionId);
+        logger.info(`Synchronized sessionId ${clientSessionId} to all tools`);
+      } else {
+        logger.warn('MCP client has no sessionId - tools will use default sessionId');
+      }
       
       logger.info(`Initialized ${this.tools.length} MCP tools:`, 
         this.tools.map(tool => tool.name));
@@ -473,18 +489,39 @@ export class MCPToolsManager {
       description: tool.description,
     }));
   }
-
   public async refreshTools(): Promise<MCPToolWrapper[]> {
     logger.info('Refreshing MCP tools...');
-    return this.initializeTools();
+    const tools = await this.initializeTools();
+    
+    // Ensure sessionId is synchronized after refresh
+    const clientSessionId = this.mcpClient.getSessionId();
+    if (clientSessionId) {
+      this.setSessionIdForAllTools(clientSessionId);
+      logger.info(`Re-synchronized sessionId ${clientSessionId} after tools refresh`);
+    }
+    
+    return tools;
   }
 
   public isToolAvailable(name: string): boolean {
     return this.tools.some(tool => tool.name === name);
   }
-
   public setSessionIdForAllTools(sessionId: string): void {
     this.tools.forEach(tool => tool.setSessionId(sessionId));
     logger.debug(`Set session ID ${sessionId} for ${this.tools.length} tools`);
+  }
+
+  public syncSessionIdFromClient(): void {
+    const clientSessionId = this.mcpClient.getSessionId();
+    if (clientSessionId) {
+      this.setSessionIdForAllTools(clientSessionId);
+      logger.info(`Synchronized sessionId ${clientSessionId} from MCP client to all tools`);
+    } else {
+      logger.warn('MCP client has no sessionId to synchronize');
+    }
+  }
+
+  public getCurrentSessionId(): string | undefined {
+    return this.mcpClient.getSessionId();
   }
 }

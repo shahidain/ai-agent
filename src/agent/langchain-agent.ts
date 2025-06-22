@@ -35,8 +35,7 @@ export class LangChainMCPAgent {
       maxTokens: config.maxTokens || 4000,
       streaming: true,
     });
-  }
-  public async initialize(): Promise<void> {
+  }  public async initialize(): Promise<void> {
     try {
       logger.info('Initializing LangChain MCP Agent...');
       
@@ -46,7 +45,12 @@ export class LangChainMCPAgent {
       if (mcpConnected) {
         // Initialize tools if MCP connected
         this.tools = await this.toolsManager.initializeTools();
+        
+        // Ensure sessionId is synchronized from MCP client to tools
+        this.toolsManager.syncSessionIdFromClient();
+        
         logger.info(`Initialized with ${this.tools.length} MCP tools`);
+        logger.info(`SessionId synchronized: ${this.toolsManager.getCurrentSessionId()}`);
       } else {
         // Initialize without MCP tools
         this.tools = [];
@@ -111,8 +115,18 @@ export class LangChainMCPAgent {
     try {
       logger.info(`Processing message for session ${sessionId}:`, message);
 
-      // Set session ID for all MCP tools before processing
-      this.toolsManager.setSessionIdForAllTools(sessionId);
+      // Use the MCP client's sessionId (from SSE) instead of the API sessionId
+      // This ensures we maintain the same sessionId that was established with the MCP server
+      const mcpSessionId = this.mcpClient.getSessionId();
+      if (mcpSessionId) {
+        // Only sync if we have a valid MCP sessionId from the SSE connection
+        this.toolsManager.setSessionIdForAllTools(mcpSessionId);
+        logger.info(`Using MCP sessionId ${mcpSessionId} for tools (API sessionId: ${sessionId})`);
+      } else {
+        // Fallback to API sessionId if MCP client doesn't have one
+        this.toolsManager.setSessionIdForAllTools(sessionId);
+        logger.warn(`MCP client has no sessionId, using API sessionId ${sessionId}`);
+      }
 
       // Get conversation history
       const chatHistory = this.conversationHistory.get(sessionId) || [];
