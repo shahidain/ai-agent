@@ -37,15 +37,13 @@ export const createChatRouter = (agent: LangChainMCPAgent): Router => {
             const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
             sseStream.sendError(errorMessage, finalSessionId);
             sseStream.sendEnd(finalSessionId);
-          }
-        } else {
-          // Handle non-streaming response
+          }        } else {
+          // Handle non-streaming response - return plain text
           const response = await agent.processMessage(message, finalSessionId);
-            res.json({
-            sessionId: finalSessionId,
-            response: response,
-            timestamp: new Date().toISOString(),
-          });
+          
+          // Set content type to plain text and return just the response content
+          res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+          res.send(response);
         }
       } catch (error) {
         logger.error('Error in chat endpoint:', error);

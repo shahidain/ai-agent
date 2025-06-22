@@ -256,18 +256,16 @@ Be helpful and accurate in your responses.`],
         tool_results: toolResults
       });
 
-      const finalResponse = await this.llm.invoke(followUpPrompt.toChatMessages());
+      const finalResponse = await this.llm.invoke(followUpPrompt.toChatMessages());      const finalResponseText = typeof finalResponse.content === 'string' ? finalResponse.content : '';
       
       if (stream) {
         // Send the final response tokens
-        if (typeof finalResponse.content === 'string') {
-          for (const char of finalResponse.content) {
-            stream.sendToken(char, sessionId);
-          }
+        for (const char of finalResponseText) {
+          stream.sendToken(char, sessionId);
         }
       }
       
-      return typeof finalResponse.content === 'string' ? finalResponse.content : '';
+      return finalResponseText;
     } else {
       // No tool calls, return the LLM response directly
       const content = typeof llmResponse.content === 'string' ? llmResponse.content : '';
@@ -384,7 +382,6 @@ Be helpful and accurate in your responses.`],
       };
     }
   }
-
   public async shutdown(): Promise<void> {
     try {
       logger.info('Shutting down LangChain MCP Agent...');
