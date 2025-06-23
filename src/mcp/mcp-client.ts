@@ -135,8 +135,10 @@ export class MCPClient {
       logger.error('Failed to initialize MCP server:', error);
       throw error;
     }
-  }private async setupSSEConnection(): Promise<void> {
+  }  private async setupSSEConnection(): Promise<void> {
     return new Promise((resolve, reject) => {
+      let sessionIdTimeout: NodeJS.Timeout | undefined;
+      
       try {
         const sseURL = `${this.baseURL}/sse`;
         logger.info(`Connecting to SSE endpoint: ${sseURL}`);
@@ -145,22 +147,33 @@ export class MCPClient {
 
         // Track if we've received the initial sessionId
         let sessionIdReceived = false;
+        let promiseResolved = false;
 
         this.eventSource.onopen = () => {
-          logger.info('SSE connection established, waiting for sessionId...');
+          logger.info('SSE connection established, waiting for sessionId...');          // Reset sessionId state on connection/reconnection
+          if (this.sessionId) {
+            logger.info('Connection reopened, clearing previous sessionId');
+            this.sessionId = undefined;
+          }
+          sessionIdReceived = false;
         };        
 
         this.eventSource.onmessage = (event) => {
           try {
             logger.debug('Raw SSE data received:', event.data);
             const message: MCPMessage = JSON.parse(event.data);
-            
-            // Check if this is the initial sessionId message
+              // Check if this is the initial sessionId message
             if (!sessionIdReceived && message.params?.sessionId) {
               this.sessionId = message.params.sessionId;
               sessionIdReceived = true;
               logger.info('SessionId received from MCP server:', this.sessionId);
-              resolve();
+              
+              // Only resolve the promise once
+              if (!promiseResolved) {
+                promiseResolved = true;
+                clearTimeout(sessionIdTimeout);
+                resolve();
+              }
               return;
             }
             
@@ -168,27 +181,27 @@ export class MCPClient {
           } catch (error) {
             logger.error('Error parsing SSE message:', { data: event.data, error: error instanceof Error ? error.message : error });
           }
-        };
-
-        this.eventSource.onerror = (error) => {
-          if (!sessionIdReceived) {
+        };        this.eventSource.onerror = (error) => {
+          if (!sessionIdReceived && !promiseResolved) {
             logger.error('SSE connection error before sessionId received:', error);
+            promiseResolved = true;
+            clearTimeout(sessionIdTimeout);
             reject(new Error(`Failed to establish SSE connection to ${sseURL}`));
           } else {
             logger.error('SSE connection error:', error);
           }
-        };
-
-        // Add timeout for sessionId reception
-        setTimeout(() => {
-          if (!sessionIdReceived) {
+        };        // Add timeout for sessionId reception
+        sessionIdTimeout = setTimeout(() => {
+          if (!sessionIdReceived && !promiseResolved) {
             this.eventSource?.close();
+            promiseResolved = true;
             reject(new Error(`Failed to receive sessionId within 10 seconds`));
           }
-        }, 10000);
-        
-      } catch (error) {
+        }, 10000);      } catch (error) {
         logger.error('Error setting up SSE connection:', error);
+        if (sessionIdTimeout) {
+          clearTimeout(sessionIdTimeout);
+        }
         reject(error);
       }
     });
@@ -206,27 +219,27 @@ export class MCPClient {
       // Handle notifications or other messages without IDs
       logger.debug('Received message without matching pending request:', message);
     }
-  }
-  private async sendRequest<T extends MCPMessage>(request: MCPMessage): Promise<T> {
+  }  private async sendRequest<T extends MCPMessage>(request: MCPMessage): Promise<T> {
     return new Promise(async (resolve, reject) => {
       if (!request.id) {
         request.id = uuidv4();
       }
-
-      // Set up response handler before sending request
-      this.pendingRequests.set(request.id, (response: MCPMessage) => {
-        if (response.error) {
-          reject(new Error(`MCP Error: ${response.error.message}`));
-        } else {
-          resolve(response as T);
-        }
-      });
 
       // Set up timeout
       const timeout = setTimeout(() => {
         this.pendingRequests.delete(request.id!);
         reject(new Error(`Request timeout for ID: ${request.id}`));
       }, 30000); // 30 second timeout
+
+      // Set up response handler before sending request
+      this.pendingRequests.set(request.id, (response: MCPMessage) => {
+        clearTimeout(timeout); // Clear timeout on success
+        if (response.error) {
+          reject(new Error(`MCP Error: ${response.error.message}`));
+        } else {
+          resolve(response as T);
+        }
+      });
 
       try {
         // Send request via HTTP POST to /messages

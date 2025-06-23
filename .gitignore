@@ -121,6 +121,7 @@ temp/
 .azure/
 
 # Test and debugging files
+mock-*.js
 test-*.js
 debug-*.js
 *-test.js
